@@ -352,7 +352,7 @@ class MediaConverter:
             "-use_timeline", "1",
             "-use_template", "1",
             "-seg_duration", str(self.SEGMENT_DURATION),
-            "-adaptation_sets", f"id=0,streams=v{' id=1,streams=a' if has_audio else ''}",
+            "-adaptation_sets", f"id=0,streams=v{'id=1,streams=a' if has_audio else ''}",
             "-f", "dash",
             "-init_seg_name", "init-stream$RepresentationID$.m4s",
             "-media_seg_name", "chunk-stream$RepresentationID$-$Number%05d$.m4s",
@@ -397,10 +397,10 @@ class MediaConverter:
             "-hls_playlist_type", "vod",
             "-hls_flags", "independent_segments",
             "-hls_segment_type", "mpegts",
-            "-hls_segment_filename", " stream_%v/data%03d.ts",
-            "-master_pl_name",  "master.m3u8",
-            "-var_stream_map", "v:0,a:0 v:1,a:1 v:2,a:2",
+            "-hls_segment_filename", "stream_%v/data%03d.ts",
             "stream_%v/playlist.m3u8"
+            "-var_stream_map", "v:0,a:0 v:1,a:1 v:2,a:2",
+            "-master_pl_name",  "main.m3u8",
         ])
         return cmd
 
