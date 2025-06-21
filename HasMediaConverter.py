@@ -9,8 +9,8 @@ import time
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Transcode videos to DASH format with optional NVIDIA GPU acceleration. \n"
-                    "Output files (MPD and M4S segments) will be placed in a subdirectory named "
+        description="Transcode videos to DASH or HLS format with optional NVIDIA GPU acceleration. \n"
+                    "Output files (MPD and M4S segments for DASH, or M3U8 and TS files for HLS) will be placed in a subdirectory named "
                     "after the input video file (without extension), located in the same directory "
                     "as the input video, or in a specified output base directory."
     )
@@ -23,6 +23,10 @@ def parse_arguments():
     parser.add_argument(
         "--gpu", action="store_true",
         help="Enable NVIDIA GPU acceleration (NVENC H.264 encoding). Requires compatible hardware, drivers, and FFmpeg build."
+    )
+    parser.add_argument(
+        "--format", choices=["dash", "hls"], default="hls",
+        help="Specify the output format: 'dash' or 'hls'. Default is 'hls'."
     )
     return parser.parse_args()
 
@@ -134,7 +138,7 @@ def run_ffmpeg_with_progress(ffmpeg_cmd: List[str], duration: float, output_dir:
         print("\rProgress: Done! (Duration was 0 or unknown)")
 
     if process.returncode == 0:
-        print(f"DASH conversion completed successfully.")
+        print(f"Conversion completed successfully.")
         if stderr and any(line.strip() for line in stderr.splitlines() if
                           "error" not in line.lower() and "warning" not in line.lower()):  # 打印非错误/警告的stderr信息
             # 避免打印所有进度行
@@ -147,7 +151,7 @@ def run_ffmpeg_with_progress(ffmpeg_cmd: List[str], duration: float, output_dir:
                     print("...")
         return True
     else:
-        print(f"\nError: DASH conversion failed with exit code {process.returncode}")
+        print(f"\nError: Conversion failed with exit code {process.returncode}")
         print("FFmpeg stdout:")
         print(stdout.strip())
         print("FFmpeg stderr:")
@@ -218,7 +222,6 @@ class MediaConverter:
                 target_w = max(source_width, int(self.MIN_OUTPUT_HEIGHT * (16 / 9)))  # 假设16:9
                 target_w = target_w if target_w % 2 == 0 else target_w + 1
 
-            # 查找一个合适的默认码率
             default_br_key = "gpu_br" if use_gpu else "cpu_br"
             # 尝试找到最接近的较低profile的码率，或最后一个profile的码率
             fallback_bitrate = self.OUTPUT_PROFILES[-1][default_br_key]
@@ -292,10 +295,6 @@ class MediaConverter:
         use_gpu = self.args.gpu
         cmd = ["ffmpeg", "-hide_banner", "-y"]
 
-        # GPU解码 (可选, 为简化，这里不启用，专注于编码加速)
-        # if use_gpu and input_codec == "h264": # 假设是H264输入
-        #     cmd.extend(["-hwaccel", "cuda", "-c:v", "h264_cuvid"]) # 或者 "-hwaccel", "nvdec"
-
         cmd.extend(["-i", input_file])
 
         # 视频流映射和编码参数
@@ -304,7 +303,6 @@ class MediaConverter:
 
             w, h, br = profile["width"], profile["height"], profile["bitrate"]
 
-            filter_complex_parts = []
 
             if use_gpu:
                 cmd.extend([f"-c:v:{i}", "h264_nvenc", f"-b:v:{i}", br])
@@ -365,7 +363,7 @@ class MediaConverter:
 
     def build_hls_command(self, input_file: str, target_profiles: List[Dict[str, Any]], has_audio: bool) -> List[str]:
         """构建FFmpeg HLS命令列表"""
-        cmd = ["ffmpeg", "-hide_banner", "-y"]
+        cmd: List = ["ffmpeg", "-hide_banner", "-y"]
         cmd.extend(["-i", input_file])
         cmd.extend(["-filter_complex"])
 
@@ -378,7 +376,6 @@ class MediaConverter:
             if i < len(target_profiles) - 1:
                 filter_complex_parts += ";"
 
-        # Remove extra double - quotes
         cmd.extend([filter_complex_parts])
 
         # 视频流映射和编码参数
@@ -387,7 +384,6 @@ class MediaConverter:
             cmd.extend([f"-c:v:{i}", "libx264", f"-b:v:{i}", profile["bitrate"]])
             cmd.extend([f"-maxrate:v:{i}", profile["bitrate"], f"-bufsize:v:{i}", profile["bitrate"]])
 
-        # 音频流映射和编码
         # 音频流映射和编码
         if has_audio:
             cmd.extend(["-map", "a:0", "-c:a:0", "aac", "-b:a:0", self.DEFAULT_AUDIO_BITRATE])
@@ -455,19 +451,28 @@ class MediaConverter:
             print(f"Error: Could not create output directory {output_dir_for_video}: {e}. Skipping.")
             return
 
-        ffmpeg_command = self.build_hls_command(
-            abs_video_file,
-            target_profiles,
-            metadata["has_audio"]
-        )
+        if self.args.format == "dash":
+            ffmpeg_command = self.build_dash_command(
+                abs_video_file,
+                target_profiles,
+                metadata["has_audio"]
+            )
+            success_msg = f"Successfully created DASH content for {abs_video_file} in {output_dir_for_video}"
+        else:
+            ffmpeg_command = self.build_hls_command(
+                abs_video_file,
+                target_profiles,
+                metadata["has_audio"]
+            )
+            success_msg = f"Successfully created HLS content for {abs_video_file} in {output_dir_for_video}"
+
         print("FFmpeg command: ", ffmpeg_command)
 
         success = run_ffmpeg_with_progress(ffmpeg_command, metadata["duration"], output_dir_for_video)
         if success:
-            print(f"Successfully created DASH content for {abs_video_file} in {output_dir_for_video}")
+            print(success_msg)
         else:
-            print(f"Failed to create DASH content for {abs_video_file}")
-
+            print(f"Failed to create {self.args.format.upper()} content for {abs_video_file}")
 
     def media2has(self):
         if self.args.gpu:
@@ -478,8 +483,7 @@ class MediaConverter:
             """
             codecs_result = (subprocess.run(["ffmpeg", "-codecs"], capture_output=True, text=True, check=True, encoding='utf-8'))
             if "h264_nvenc" not in codecs_result.stdout and "hevc_nvenc" not in codecs_result.stdout:
-                print(
-                    "Warning: --gpu specified, but 'h264_nvenc' or 'hevc_nvenc' not found in `ffmpeg -codecs` output. GPU acceleration might not work or might fallback to CPU.")
+                print("Warning: --gpu specified, but 'h264_nvenc' or 'hevc_nvenc' not found in `ffmpeg -codecs` output. GPU acceleration might not work or might fallback to CPU.")
             else:
                 print("Info: GPU acceleration requested. Will attempt to use NVENC.")
 
