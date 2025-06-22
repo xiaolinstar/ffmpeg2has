@@ -293,7 +293,7 @@ class MediaConverter:
     def build_dash_command(self, input_file: str, target_profiles: List[Dict[str, Any]], has_audio: bool) -> List[str]:
         """构建FFmpeg命令列表"""
         use_gpu = self.args.gpu
-        cmd = ["ffmpeg", "-hide_banner", "-y"]
+        cmd: List = ["ffmpeg", "-hide_banner", "-y"]
 
         cmd.extend(["-i", input_file])
 
@@ -354,9 +354,9 @@ class MediaConverter:
             "-seg_duration", str(self.SEGMENT_DURATION),
             "-adaptation_sets", f"id=0,streams=v{' id=1,streams=a' if has_audio else ''}",
             "-f", "dash",
-            "-init_seg_name", "dash/init-stream$RepresentationID$.m4s",
-            "-media_seg_name", "dash/chunk-stream$RepresentationID$-$Number%05d$.m4s",
-            "dash/main.mpd"  # MPD 文件名，将相对于 cwd
+            "-init_seg_name", "init-stream$RepresentationID$.m4s",
+            "-media_seg_name", "chunk-stream$RepresentationID$-$Number%05d$.m4s",
+            "main.mpd"  # MPD 文件名，将相对于 cwd
         ])
         return cmd
 
@@ -412,8 +412,8 @@ class MediaConverter:
             "-hls_flags", "independent_segments",  # 每个 TS 片段独立
             "-hls_segment_type", "mpegts",  # TS 片段格式
             "-master_pl_name", "main.m3u8",  # 主播放列表文件名
-            "-hls_segment_filename", "hls/stream_%v/data%03d.ts",  # TS 片段文件名模板
-            "-var_stream_map", var_stream_map, "hls/stream_%v/playlist.m3u8"  # 子播放列表文件名模板
+            "-hls_segment_filename", "stream_%v/data%03d.ts",  # TS 片段文件名模板
+            "-var_stream_map", var_stream_map, "stream_%v/playlist.m3u8"  # 子播放列表文件名模板
         ])
         return cmd
 
@@ -460,12 +460,15 @@ class MediaConverter:
 
         try:
             os.makedirs(output_dir_for_video, exist_ok=True)
+            has_dir = None
             if self.args.format == "dash":
-                dash_dir = os.path.join(output_dir_for_video, "dash")
-                os.makedirs(dash_dir, exist_ok=True)
+                has_dir = os.path.join(output_dir_for_video, "dash")
             elif self.args.format == "hls":
-                hls_dir = os.path.join(output_dir_for_video, "hls")
-                os.makedirs(hls_dir, exist_ok=True)
+                has_dir = os.path.join(output_dir_for_video, "hls")
+            else:
+                print(f"Error: Invalid format specified: {self.args.format}. Skipping.")
+                return
+            os.makedirs(has_dir, exist_ok=True)
         except OSError as e:
             print(f"Error: Could not create output directory {output_dir_for_video}: {e}. Skipping.")
             return
@@ -487,7 +490,7 @@ class MediaConverter:
 
         print("FFmpeg command: ", ffmpeg_command)
 
-        success = run_ffmpeg_with_progress(ffmpeg_command, metadata["duration"], output_dir_for_video)
+        success = run_ffmpeg_with_progress(ffmpeg_command, metadata["duration"], has_dir)
         if success:
             print(success_msg)
         else:
@@ -512,3 +515,4 @@ class MediaConverter:
 if __name__ == "__main__":
     converter = MediaConverter()
     converter.media2has()
+
