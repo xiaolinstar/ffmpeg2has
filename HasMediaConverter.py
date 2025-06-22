@@ -352,11 +352,11 @@ class MediaConverter:
             "-use_timeline", "1",
             "-use_template", "1",
             "-seg_duration", str(self.SEGMENT_DURATION),
-            "-adaptation_sets", f"id=0,streams=v{'id=1,streams=a' if has_audio else ''}",
+            "-adaptation_sets", f"id=0,streams=v{' id=1,streams=a' if has_audio else ''}",
             "-f", "dash",
-            "-init_seg_name", "init-stream$RepresentationID$.m4s",
-            "-media_seg_name", "chunk-stream$RepresentationID$-$Number%05d$.m4s",
-            "main.mpd"  # MPD文件名，将相对于cwd
+            "-init_seg_name", "dash/init-stream$RepresentationID$.m4s",
+            "-media_seg_name", "dash/chunk-stream$RepresentationID$-$Number%05d$.m4s",
+            "dash/main.mpd"  # MPD 文件名，将相对于 cwd
         ])
         return cmd
 
@@ -369,10 +369,10 @@ class MediaConverter:
 
         # 构建滤镜链
         filter_complex_parts = "[0:v]split={}".format(len(target_profiles))
-        filter_complex_parts += "".join("[v{}]".format(1+i) for i in range(len(target_profiles))) + ";"
+        filter_complex_parts += "".join("[v{}]".format(1 + i) for i in range(len(target_profiles))) + ";"
 
         for i, profile in enumerate(target_profiles):
-            filter_complex_parts += "[v{}]scale=w={}:h={}[v{}out]".format(i+1, profile['width'], profile['height'], i+1)
+            filter_complex_parts += "[v{}]scale=w={}:h={}[v{}out]".format(i + 1, profile['width'], profile['height'], i + 1)
             if i < len(target_profiles) - 1:
                 filter_complex_parts += ";"
 
@@ -380,27 +380,40 @@ class MediaConverter:
 
         # 视频流映射和编码参数
         for i, profile in enumerate(target_profiles):
-            cmd.extend(["-map", f"[v{i+1}out]"])
+            cmd.extend(["-map", f"[v{i + 1}out]"])
             cmd.extend([f"-c:v:{i}", "libx264", f"-b:v:{i}", profile["bitrate"]])
             cmd.extend([f"-maxrate:v:{i}", profile["bitrate"], f"-bufsize:v:{i}", profile["bitrate"]])
 
         # 音频流映射和编码
+        audio_mappings = []
         if has_audio:
-            cmd.extend(["-map", "a:0", "-c:a:0", "aac", "-b:a:0", self.DEFAULT_AUDIO_BITRATE])
-            cmd.extend(["-map", "a:0", "-c:a:1", "aac", "-b:a:1", self.DEFAULT_AUDIO_BITRATE])
-            cmd.extend(["-map", "a:0", "-c:a:2", "aac", "-b:a:2", self.DEFAULT_AUDIO_BITRATE, "-ac", "2"])
+            for i in range(len(target_profiles)):
+                if i < len(target_profiles) - 1:
+                    cmd.extend(["-map", "0:a:0", f"-c:a:{i}", "aac", f"-b:a:{i}", self.DEFAULT_AUDIO_BITRATE])
+                else:
+                    cmd.extend(["-map", "0:a:0", f"-c:a:{i}", "aac", f"-b:a:{i}", self.DEFAULT_AUDIO_BITRATE, "-ac", "2"])
+                audio_mappings.append(f"a:{i}")
 
-        # HLS 输出参数
+        # 动态生成 var_stream_map
+        var_stream_map_parts = []
+        for i in range(len(target_profiles)):
+            video_part = f"v:{i}"
+            audio_part = audio_mappings[i] if has_audio else ""
+            part = f"{video_part},{audio_part}" if has_audio else video_part
+            var_stream_map_parts.append(part)
+
+        var_stream_map = " ".join(var_stream_map_parts)
+
+        # 正确组织 HLS 输出参数
         cmd.extend([
             "-f", "hls",
-            "-hls_time", "10",
-            "-hls_playlist_type", "vod",
-            "-hls_flags", "independent_segments",
-            "-hls_segment_type", "mpegts",
-            "-hls_segment_filename", "stream_%v/data%03d.ts",
-            "stream_%v/playlist.m3u8"
-            "-var_stream_map", "v:0,a:0 v:1,a:1 v:2,a:2",
-            "-master_pl_name",  "main.m3u8",
+            "-hls_time", "10",  # 每个 TS 片段的时长（秒）
+            "-hls_playlist_type", "vod",  # 播放列表类型为点播
+            "-hls_flags", "independent_segments",  # 每个 TS 片段独立
+            "-hls_segment_type", "mpegts",  # TS 片段格式
+            "-master_pl_name", "main.m3u8",  # 主播放列表文件名
+            "-hls_segment_filename", "hls/stream_%v/data%03d.ts",  # TS 片段文件名模板
+            "-var_stream_map", var_stream_map, "hls/stream_%v/playlist.m3u8"  # 子播放列表文件名模板
         ])
         return cmd
 
@@ -447,6 +460,12 @@ class MediaConverter:
 
         try:
             os.makedirs(output_dir_for_video, exist_ok=True)
+            if self.args.format == "dash":
+                dash_dir = os.path.join(output_dir_for_video, "dash")
+                os.makedirs(dash_dir, exist_ok=True)
+            elif self.args.format == "hls":
+                hls_dir = os.path.join(output_dir_for_video, "hls")
+                os.makedirs(hls_dir, exist_ok=True)
         except OSError as e:
             print(f"Error: Could not create output directory {output_dir_for_video}: {e}. Skipping.")
             return
@@ -457,14 +476,14 @@ class MediaConverter:
                 target_profiles,
                 metadata["has_audio"]
             )
-            success_msg = f"Successfully created DASH content for {abs_video_file} in {output_dir_for_video}"
+            success_msg = f"Successfully created DASH content for {abs_video_file} in {os.path.join(output_dir_for_video, 'dash')}"
         else:
             ffmpeg_command = self.build_hls_command(
                 abs_video_file,
                 target_profiles,
                 metadata["has_audio"]
             )
-            success_msg = f"Successfully created HLS content for {abs_video_file} in {output_dir_for_video}"
+            success_msg = f"Successfully created HLS content for {abs_video_file} in {os.path.join(output_dir_for_video, 'hls')}"
 
         print("FFmpeg command: ", ffmpeg_command)
 
